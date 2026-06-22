@@ -1,0 +1,4 @@
+/Users/huangzhaoming/tcmt-server/build/CMakeFiles/sqlite3.dir
+/Users/huangzhaoming/tcmt-server/build/CMakeFiles/tcmt-server.dir
+/Users/huangzhaoming/tcmt-server/build/CMakeFiles/edit_cache.dir
+/Users/huangzhaoming/tcmt-server/build/CMakeFiles/rebuild_cache.dir
