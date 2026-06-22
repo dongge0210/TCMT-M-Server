@@ -3,6 +3,8 @@
 #include <sstream>
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
+#include <unordered_map>
 
 using json = nlohmann::json;
 
@@ -18,10 +20,59 @@ static std::string pathParam(const std::string& prefix, const std::string& path)
     return {};
 }
 
+/// Strip query string from a path segment. Returns the part before '?'.
+static std::string stripQuery(const std::string& s) {
+    auto q = s.find('?');
+    return (q == std::string::npos) ? s : s.substr(0, q);
+}
+
+/// Parse query string into key-value map.
+static std::unordered_map<std::string, std::string> parseQuery(const std::string& path) {
+    std::unordered_map<std::string, std::string> params;
+    auto q = path.find('?');
+    if (q == std::string::npos) return params;
+
+    std::string qs = path.substr(q + 1);
+    size_t pos = 0;
+    while (pos < qs.size()) {
+        auto eq = qs.find('=', pos);
+        auto amp = qs.find('&', pos);
+        if (amp == std::string::npos) amp = qs.size();
+        if (eq != std::string::npos && eq < amp) {
+            std::string key = qs.substr(pos, eq - pos);
+            std::string val = qs.substr(eq + 1, amp - eq - 1);
+            params[key] = val;
+        }
+        pos = amp + 1;
+    }
+    return params;
+}
+
 /// Current time as unix milliseconds.
 static int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+/// Parse a time value: absolute unix ms, or relative like "-1h", "-30m", "-7d".
+static int64_t parseTime(const std::string& val, int64_t fallback) {
+    if (val.empty()) return fallback;
+    if (val[0] == '-') {
+        // Relative time: "-1h", "-30m", "-7d"
+        int64_t num = -std::atoll(val.c_str() + 1); // skip '-', negate
+        char unit = val.back();
+        int64_t ms = 0;
+        switch (unit) {
+            case 's': ms = num * 1000LL; break;
+            case 'm': ms = num * 60LL * 1000LL; break;
+            case 'h': ms = num * 3600LL * 1000LL; break;
+            case 'd': ms = num * 86400LL * 1000LL; break;
+            default:  ms = num * 1000LL; break; // treat bare number as seconds
+        }
+        return nowMs() + ms;
+    }
+    // Absolute timestamp
+    return std::atoll(val.c_str());
 }
 
 /// Find a device by auth token. Returns nullptr on failure.
@@ -83,15 +134,16 @@ void ApiRouter::Register(HttpServer& server, DeviceManager& devices, Storage& st
     // ── Single Device + Sub-resources (MUST be before list route) ───────
     // Registered FIRST so MatchRoute picks exact match before wider prefixes.
     server.GET("/api/devices/", [&](const std::string&, const std::string& path, const std::string&) -> std::string {
-        // path looks like /api/devices/dev_XXXX[/subresource]
+        // path looks like /api/devices/dev_XXXX[/subresource][?query]
         std::string rest = pathParam("/api/devices/", path);
         if (rest.empty())
             return json{{"error","missing device id"}}.dump();
 
-        // Split into deviceId / sub-resource
+        // Split into deviceId / sub-resource (strip query from both)
         auto slash = rest.find('/');
-        std::string id  = (slash == std::string::npos) ? rest : rest.substr(0, slash);
-        std::string sub = (slash == std::string::npos) ? ""    : rest.substr(slash + 1);
+        std::string id  = (slash == std::string::npos) ? stripQuery(rest) : rest.substr(0, slash);
+        std::string subRaw = (slash == std::string::npos) ? "" : rest.substr(slash + 1);
+        std::string sub = stripQuery(subRaw);
 
         Device* d = devices.Get(id);
         if (!d)
@@ -106,6 +158,34 @@ void ApiRouter::Register(HttpServer& server, DeviceManager& devices, Storage& st
                 {"model",  d->model},
                 {"online", d->online},
                 {"lastSeen", d->lastSeen}
+            }.dump();
+        }
+
+        // ── History (time-series query) ─────────────────────────────────
+        if (sub == "history") {
+            auto params = parseQuery(path);
+            std::string field = params.count("field") ? params["field"] : "";
+            if (field.empty())
+                return json{{"error","missing 'field' query parameter"}}.dump();
+
+            int64_t now = nowMs();
+            int64_t from = parseTime(params.count("from") ? params["from"] : "-1h", now - 3600000);
+            int64_t to   = parseTime(params.count("to")   ? params["to"]   : "", now);
+            int limit    = params.count("limit") ? std::atoi(params["limit"].c_str()) : 1000;
+
+            auto points = storage.QueryHistory(id, field, from, to, limit);
+
+            json arr = json::array();
+            for (const auto& p : points) {
+                arr.push_back({{"ts", p.timestamp}, {"value", p.value}});
+            }
+            return json{
+                {"deviceId", id},
+                {"field",    field},
+                {"from",     from},
+                {"to",       to},
+                {"count",    arr.size()},
+                {"history",  arr}
             }.dump();
         }
 
@@ -157,36 +237,5 @@ void ApiRouter::Register(HttpServer& server, DeviceManager& devices, Storage& st
         }
 
         return json{{"status","ok"}}.dump();
-    });
-
-    // ── History ──────────────────────────────────────────────────────────────
-    server.GET("/api/devices/", [&](const std::string&, const std::string& path, const std::string&) -> std::string {
-        // path: /api/devices/dev_XXXX/history?field=cpu.usage&from=-3600000&to=now
-        // NOTE: The HttpServer strips query strings *before* routing (see server.cpp Line 164),
-        // so query params are not available here. This is a placeholder that returns
-        // the latest snapshot instead. Full time-series query support requires query-string
-        // preservation in the server core.
-        std::string rest = pathParam("/api/devices/", path);
-        if (rest.empty())
-            return json{{"error","missing device id"}}.dump();
-
-        auto slash = rest.find('/');
-        std::string id    = (slash == std::string::npos) ? rest : rest.substr(0, slash);
-        std::string sub   = (slash == std::string::npos) ? ""    : rest.substr(slash + 1);
-
-        // Only handle "history" sub-resource
-        if (sub.empty() || sub.find("history") != 0)
-            return json{{"error","unknown sub-resource"}}.dump();
-
-        auto* d = devices.Get(id);
-        if (!d)
-            return json{{"error","device not found"}}.dump();
-
-        // Return the latest snapshot as a one-element history array.
-        // TODO: when the server core preserves query strings, replace with real
-        // storage.QueryHistory() call.
-        json arr = json::array();
-        arr.push_back(d->latestData);
-        return json{{"deviceId",id},{"history",arr}}.dump();
     });
 }

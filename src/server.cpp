@@ -318,29 +318,31 @@ bool HttpServer::ParseRequestLine(const std::string& line, std::string& method, 
 
     method = line.substr(0, s);
     path = line.substr(s + 1, e - s - 1);
-
-    // Remove query string if present
-    auto q = path.find('?');
-    if (q != std::string::npos)
-        path = path.substr(0, q);
-
+    // Keep query string — handlers parse it if needed.
+    // MatchRoute strips it internally for routing only.
     return true;
 }
 
 HttpServer::Route* HttpServer::MatchRoute(const std::string& method, const std::string& path) {
+    // Strip query string for matching only (handler receives original path)
+    std::string cleanPath = path;
+    auto q = cleanPath.find('?');
+    if (q != std::string::npos)
+        cleanPath = cleanPath.substr(0, q);
+
     for (auto& rt : routes_) {
         if (rt.method != method)
             continue;
 
         // Exact match first
-        if (rt.prefix == path)
+        if (rt.prefix == cleanPath)
             return &rt;
 
         // Prefix match: only if route ends with '/' (sub-resource).
         // Routes without trailing slash like "/api/devices" match EXACT only.
         if (rt.prefix.back() == '/' &&
-            path.size() > rt.prefix.size() &&
-            path.compare(0, rt.prefix.size(), rt.prefix) == 0) {
+            cleanPath.size() > rt.prefix.size() &&
+            cleanPath.compare(0, rt.prefix.size(), rt.prefix) == 0) {
             return &rt;
         }
     }
