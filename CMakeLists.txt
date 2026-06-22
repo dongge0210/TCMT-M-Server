@@ -32,5 +32,6 @@ add_executable(tcmt-server
 
 target_include_directories(tcmt-server PRIVATE include)
 
+find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
-target_link_libraries(tcmt-server PRIVATE sqlite3 Threads::Threads)
+target_link_libraries(tcmt-server PRIVATE sqlite3 Threads::Threads OpenSSL::SSL OpenSSL::Crypto)

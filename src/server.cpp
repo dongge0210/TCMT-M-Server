@@ -7,6 +7,28 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <openssl/sha.h>   // SHA1
+#include <arpa/inet.h>      // ntohs etc.
+
+// ---------------------------------------------------------------------------
+// Base64 encoding (RFC 4648)
+// ---------------------------------------------------------------------------
+static std::string Base64Encode(const unsigned char* data, size_t len) {
+    static const char enc[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        unsigned int b = (static_cast<unsigned int>(data[i]) << 16) |
+                         (i + 1 < len ? static_cast<unsigned int>(data[i + 1]) << 8 : 0) |
+                         (i + 2 < len ? static_cast<unsigned int>(data[i + 2]) : 0);
+        out += enc[(b >> 18) & 0x3F];
+        out += enc[(b >> 12) & 0x3F];
+        out += (i + 1 < len) ? enc[(b >> 6) & 0x3F] : '=';
+        out += (i + 2 < len) ? enc[b & 0x3F] : '=';
+    }
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // Route registration
@@ -20,8 +42,11 @@ void HttpServer::POST(const std::string& path, Handler handler) {
     routes_.push_back({"POST", path, std::move(handler)});
 }
 
-void HttpServer::WS(const std::string& /*path*/) {
-    // placeholder — WebSocket upgrade not yet implemented
+void HttpServer::WS(const std::string& path) {
+    // Store a WS marker route (the handshake is handled inline in AcceptLoop)
+    routes_.push_back({"GET", path, [](const std::string&, const std::string&, const std::string&) -> std::string {
+        return ""; // never called — handshake is done inline
+    }});
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +102,113 @@ void HttpServer::Stop() {
 // Accept loop
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Helper: check if request has "Upgrade: websocket" and extract Sec-WebSocket-Key
+// ---------------------------------------------------------------------------
+static bool IsWebSocketUpgrade(const std::string& request, std::string& secKey) {
+    // Check for the upgrade header
+    auto upPos = request.find("Upgrade:");
+    if (upPos == std::string::npos)
+        return false;
+    // Verify it says "websocket" (case-insensitive)
+    auto valStart = request.find_first_not_of(" \t", upPos + 8);
+    if (valStart == std::string::npos)
+        return false;
+    auto valEnd = request.find("\r\n", valStart);
+    std::string upgradeVal = request.substr(valStart, valEnd - valStart);
+    // Trim trailing whitespace
+    while (!upgradeVal.empty() && (upgradeVal.back() == ' ' || upgradeVal.back() == '\t' || upgradeVal.back() == '\r'))
+        upgradeVal.pop_back();
+    if (upgradeVal != "websocket")
+        return false;
+
+    // Extract Sec-WebSocket-Key
+    auto keyPos = request.find("Sec-WebSocket-Key:");
+    if (keyPos == std::string::npos)
+        return false;
+    auto keyStart = request.find_first_not_of(" \t", keyPos + 18);
+    if (keyStart == std::string::npos)
+        return false;
+    auto keyEnd = request.find("\r\n", keyStart);
+    secKey = request.substr(keyStart, keyEnd - keyStart);
+    // Trim trailing whitespace
+    while (!secKey.empty() && (secKey.back() == ' ' || secKey.back() == '\t' || secKey.back() == '\r'))
+        secKey.pop_back();
+    return !secKey.empty();
+}
+
+// ---------------------------------------------------------------------------
+// WS handshake response (RFC 6455)
+// ---------------------------------------------------------------------------
+std::string HttpServer::WsHandshakeResponse(const std::string& secKey) {
+    // 1. Append the magic GUID
+    std::string concat = secKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+    // 2. SHA-1 hash
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    SHA1(reinterpret_cast<const unsigned char*>(concat.data()), concat.size(), hash);
+
+    // 3. Base64 encode
+    std::string accept = Base64Encode(hash, SHA_DIGEST_LENGTH);
+
+    // 4. Build 101 response
+    std::ostringstream oss;
+    oss << "HTTP/1.1 101 Switching Protocols\r\n"
+        << "Upgrade: websocket\r\n"
+        << "Connection: Upgrade\r\n"
+        << "Sec-WebSocket-Accept: " << accept << "\r\n"
+        << "\r\n";
+    return oss.str();
+}
+
+// ---------------------------------------------------------------------------
+// Build a single WebSocket text frame (FIN=1, opcode=0x1)
+// ---------------------------------------------------------------------------
+std::string HttpServer::WsFrame(const std::string& payload) {
+    std::string frame;
+    frame.reserve(payload.size() + 10);
+
+    // First byte: FIN (0x80) | text opcode (0x1) = 0x81
+    frame += static_cast<char>(0x81);
+
+    // Encode length
+    size_t len = payload.size();
+    if (len < 126) {
+        frame += static_cast<char>(len);
+    } else if (len <= 0xFFFF) {
+        frame += static_cast<char>(126);
+        frame += static_cast<char>((len >> 8) & 0xFF);
+        frame += static_cast<char>(len & 0xFF);
+    } else {
+        frame += static_cast<char>(127);
+        for (int i = 7; i >= 0; --i)
+            frame += static_cast<char>((len >> (i * 8)) & 0xFF);
+    }
+
+    frame += payload;
+    return frame;
+}
+
+// ---------------------------------------------------------------------------
+// Broadcast a text message to all connected WS clients
+// ---------------------------------------------------------------------------
+void HttpServer::WsBroadcast(const std::string& message) {
+    std::string frame = WsFrame(message);
+    std::lock_guard<std::mutex> lock(wsMutex_);
+    for (auto it = wsClients_.begin(); it != wsClients_.end(); ) {
+        ssize_t sent = write(*it, frame.data(), frame.size());
+        if (sent <= 0) {
+            close(*it);
+            it = wsClients_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accept loop (HTTP/1.1 + WebSocket upgrade)
+// ---------------------------------------------------------------------------
 void HttpServer::AcceptLoop() {
     while (running_.load()) {
         sockaddr_in client{};
@@ -115,6 +247,33 @@ void HttpServer::AcceptLoop() {
             continue;
         }
 
+        // ── WebSocket upgrade check ────────────────────────────────────────
+        std::string secKey;
+        if (method == "GET" && IsWebSocketUpgrade(request, secKey)) {
+            // Verify the path is a registered WS endpoint
+            Route* route = MatchRoute(method, path);
+            if (route) {
+                std::string handshake = WsHandshakeResponse(secKey);
+                write(cfd, handshake.data(), handshake.size());
+
+                // Add to WS client list
+                {
+                    std::lock_guard<std::mutex> lock(wsMutex_);
+                    wsClients_.push_back(cfd);
+                }
+                std::cout << "[ws] Client connected: " << path << " (total: "
+                          << wsClients_.size() << ")" << std::endl;
+            } else {
+                // WS route not registered — reject
+                std::string resp = BuildHttpResponse(404, "Not Found", "text/plain");
+                write(cfd, resp.data(), resp.size());
+                close(cfd);
+            }
+            // Keep the socket open (don't close)
+            continue;
+        }
+
+        // ── Normal HTTP handling ───────────────────────────────────────────
         // Extract body (after \r\n\r\n)
         auto bodyStart = request.find("\r\n\r\n");
         std::string body;

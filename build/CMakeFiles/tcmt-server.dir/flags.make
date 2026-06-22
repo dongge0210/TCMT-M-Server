@@ -4,7 +4,7 @@
 # compile CXX with /usr/bin/c++
 CXX_DEFINES = 
 
-CXX_INCLUDES = -I/Users/huangzhaoming/tcmt-server/../TCMT-Windows-client/src/CPP-parsers/extern/json/single_include -I/Users/huangzhaoming/tcmt-server/include -I/Users/huangzhaoming/tcmt-server/build/sqlite3-staged
+CXX_INCLUDES = -I/Users/huangzhaoming/tcmt-server/../TCMT-Windows-client/src/CPP-parsers/extern/json/single_include -I/Users/huangzhaoming/tcmt-server/include -I/Users/huangzhaoming/tcmt-server/build/sqlite3-staged -isystem /opt/homebrew/Cellar/openssl@3/3.6.2/include
 
 CXX_FLAGSarm64 = -O3 -DNDEBUG -std=gnu++20 -arch arm64
 

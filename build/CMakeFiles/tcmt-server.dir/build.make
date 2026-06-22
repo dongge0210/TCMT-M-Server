@@ -176,6 +176,8 @@ tcmt-server: CMakeFiles/tcmt-server.dir/src/api.cpp.o
 tcmt-server: CMakeFiles/tcmt-server.dir/src/ws.cpp.o
 tcmt-server: CMakeFiles/tcmt-server.dir/build.make
 tcmt-server: libsqlite3.a
+tcmt-server: /opt/homebrew/Cellar/openssl@3/3.6.2/lib/libssl.dylib
+tcmt-server: /opt/homebrew/Cellar/openssl@3/3.6.2/lib/libcrypto.dylib
 tcmt-server: CMakeFiles/tcmt-server.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/huangzhaoming/tcmt-server/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Linking CXX executable tcmt-server"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/tcmt-server.dir/link.txt --verbose=$(VERBOSE)

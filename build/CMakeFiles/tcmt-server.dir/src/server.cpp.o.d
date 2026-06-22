@@ -988,4 +988,11 @@ CMakeFiles/tcmt-server.dir/src/server.cpp.o: \
   /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/_select.h \
   /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/_types/_uuid_t.h \
   /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/gethostuuid.h \
-  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/iostream
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/iostream \
+  /opt/homebrew/Cellar/openssl@3/3.6.2/include/openssl/sha.h \
+  /opt/homebrew/Cellar/openssl@3/3.6.2/include/openssl/macros.h \
+  /opt/homebrew/Cellar/openssl@3/3.6.2/include/openssl/opensslconf.h \
+  /opt/homebrew/Cellar/openssl@3/3.6.2/include/openssl/configuration.h \
+  /opt/homebrew/Cellar/openssl@3/3.6.2/include/openssl/opensslv.h \
+  /opt/homebrew/Cellar/openssl@3/3.6.2/include/openssl/e_os2.h \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/arpa/inet.h
