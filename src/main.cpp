@@ -10,6 +10,7 @@
 #include <csignal>
 #include <atomic>
 #include <unistd.h>
+#include <sys/stat.h>
 
 using json = nlohmann::json;
 
@@ -33,8 +34,12 @@ void HandleSignal(int /*sig*/) {
 // Entry point
 // -----------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
-    int         port   = 8080;
-    std::string dbPath = "./data/tcmt.db";
+    int port = 8080;
+    // Default DB: ~/.tcmt/server.db (auto-create directory)
+    std::string home = getenv("HOME") ? getenv("HOME") : ".";
+    std::string dbDir  = home + "/.tcmt";
+    std::string dbPath = dbDir + "/server.db";
+    mkdir(dbDir.c_str(), 0755);
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
