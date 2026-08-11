@@ -1,0 +1,15 @@
+{
+  "name": "tcmt-server",
+  "version": "1.0.0",
+  "description": "TCMT-M relay backend: ingests snapshots from TCMT-M clients, persists to SQLite, serves REST + WebSocket. Frontend (viewer) is a separate app (TCMT-M-viewer).",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "GPL-3.0"
+}
