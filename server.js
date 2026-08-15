@@ -13,7 +13,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from './lib/store.js';
 import { createHandler } from './lib/api.js';
-import { isWsRequest, acceptUpgrade, send } from './lib/ws.js';
+import { createStatic } from './lib/static.js';
+import { isWsRequest, acceptUpgrade, send, createTicketStore } from './lib/ws.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '1.0.0';
@@ -54,20 +55,37 @@ const store = new Store({
   legacyDevices,
 });
 const clients = new Set();
+const wsTickets = createTicketStore();
 
 function broadcast(obj) {
   const text = JSON.stringify(obj);
   for (const client of [...clients]) send(client, text);
 }
 
-const handler = createHandler({
+const apiHandler = createHandler({
   store,
   authToken: AUTH_TOKEN,
   corsOrigin: CORS_ORIGIN,
+  serverInfo: {
+    version: VERSION,
+    startTime: Date.now(),
+    wsClients: () => clients.size,
+    issueWsTicket: () => wsTickets.issue(),
+  },
   onSnapshot(device) {
     broadcast({ type: 'snapshot', deviceId: device.id, data: device.latest });
   },
 });
+
+// Built-in dashboard (dashboard/ folder) served at /dashboard/; everything
+// else falls through to the API router.
+const dashboard = createStatic({
+  root: path.join(__dirname, 'dashboard'),
+  prefix: '/dashboard/',
+});
+const handler = (req, res) => {
+  if (!dashboard(req, res)) apiHandler(req, res);
+};
 
 const server = SCHEME === 'https'
   ? https.createServer({
@@ -94,13 +112,14 @@ server.on('upgrade', (req, socket) => {
       }));
     },
     client => clients.delete(client),
-    { authToken: AUTH_TOKEN }
+    { authToken: AUTH_TOKEN, tickets: AUTH_TOKEN ? wsTickets : null }
   );
 });
 
-// Periodic device-list broadcast (matches the previous server's cadence).
+// Periodic device-list + fleet-aggregate broadcast (previous server cadence).
 setInterval(() => {
   broadcast({ type: 'devices', data: store.list() });
+  broadcast({ type: 'aggregate', data: store.aggregate() });
 }, 500);
 
 server.listen(PORT, HOST, () => {
@@ -113,11 +132,12 @@ server.listen(PORT, HOST, () => {
     for (const iface of lanAddresses()) {
       console.log(`[tcmt-server] LAN API   : ${SCHEME}://${iface.address}:${PORT}/`);
     }
-    console.log(`[tcmt-server] client    : ./build/src/TCMT-M --http --server ${SCHEME}://<this-host>:${PORT}`);
+    console.log('[tcmt-server] client    : run TCMT-M and point it at this server from its TUI settings');
     console.log(AUTH_TOKEN
       ? '[tcmt-server] read APIs are protected by --auth-token'
       : '[tcmt-server] WARNING: read APIs are unauthenticated; set --auth-token for public exposure.');
   }
+  console.log(`[tcmt-server] dashboard : ${SCHEME}://localhost:${PORT}/dashboard/`);
   console.log('[tcmt-server] viewer is a separate app: open TCMT-M-viewer/index.html or serve it statically.');
 });
 

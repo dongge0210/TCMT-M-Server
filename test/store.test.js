@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { Store, flatten } from '../lib/store.js';
 
 function tempDb() {
@@ -156,4 +157,79 @@ test('history persists across restart (SQLite)', () => {
   assert.equal(hist[0].value, 77);
   assert.equal(s2.get(dev.id).name, 'PersistBox'); // registry persists too
   s2.close();
+});
+
+test('outdated timeseries schema is preserved and rebuilt', () => {
+  const db = tempDb();
+  // Old prototype layout: `time` instead of `ts`.
+  {
+    const old = new DatabaseSync(db);
+    old.exec('CREATE TABLE timeseries (device_id TEXT, field TEXT, time INTEGER, value REAL)');
+    old.prepare('INSERT INTO timeseries VALUES (?, ?, ?, ?)')
+      .run('dev_x', 'cpu_usage', 123, 42.5);
+    old.close();
+  }
+
+  const store = new Store({ dbPath: db });
+  const dev = store.register('ck-mig', 'MigBox', 'macOS', 'M2');
+  store.ingest(dev.token, snapshot({ cpu_usage: 10 }), Date.now());
+
+  // New schema operational.
+  const hist = store.history(dev.id, 'cpu_usage', 0, Date.now() + 1, 0);
+  assert.equal(hist.length, 1);
+  assert.equal(hist[0].value, 10);
+
+  // Old data preserved under a backup table.
+  const backups = store.db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'timeseries_backup_%'"
+  ).all();
+  assert.equal(backups.length, 1);
+  const oldRow = store.db.prepare(`SELECT value FROM ${backups[0].name}`).get();
+  assert.equal(oldRow.value, 42.5);
+  store.close();
+});
+
+test('aggregate summarizes fleet counts and avg/max over online devices', () => {
+  const store = new Store({ dbPath: tempDb() });
+  const a = store.register('ck-agg-a', 'BoxA', 'macOS', 'M2');
+  const b = store.register('ck-agg-b', 'BoxB', 'Windows', 'PC');
+  const now = Date.now();
+  store.ingest(a.token, snapshot({ cpu_usage: 20, cpu_temp: 55, gpu_usage: 10, gpu_temp: 60 }), now);
+  store.ingest(b.token, snapshot({ cpu_usage: 40, cpu_temp: 65, gpu_usage: 30, gpu_temp: 80 }), now);
+
+  const agg = store.aggregate();
+  assert.equal(agg.total, 2);
+  assert.equal(agg.online, 2);
+  assert.equal(agg.offline, 0);
+  assert.equal(agg.cpu.usage.avg, 30);
+  assert.equal(agg.cpu.usage.max, 40);
+  assert.equal(agg.cpu.usage.maxDevice, b.id);
+  assert.equal(agg.gpu.temp.max, 80);
+  assert.equal(agg.memory.percent.avg, 50);
+  // Temperatures aggregate covers CPU + GPU + sensor array across the fleet.
+  assert.equal(agg.temperatures.max.value, 80);
+  assert.equal(agg.temperatures.max.name, 'GPU');
+  assert.equal(agg.temperatures.max.deviceId, b.id);
+  assert.equal(agg.temperatures.avg, 54.4); // (55+60+65+80+33.2+33.2)/6
+
+  // A device that stops ingesting counts toward totals but not value stats.
+  store.ingest(a.token, snapshot({ cpu_usage: 999 }), now - 60000);
+  const stale = store.aggregate();
+  assert.equal(stale.total, 2);
+  assert.equal(stale.online, 1);
+  assert.equal(stale.offline, 1);
+  assert.equal(stale.cpu.usage.max, 40); // 999 excluded
+  assert.equal(stale.cpu.usage.maxDevice, b.id);
+  store.close();
+});
+
+test('aggregate handles an empty registry', () => {
+  const store = new Store({ dbPath: tempDb() });
+  const agg = store.aggregate();
+  assert.equal(agg.total, 0);
+  assert.equal(agg.online, 0);
+  assert.equal(agg.offline, 0);
+  assert.equal(agg.cpu.usage, null);
+  assert.equal(agg.temperatures.max, null);
+  store.close();
 });

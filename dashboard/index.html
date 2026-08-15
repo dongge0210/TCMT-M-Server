@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TCMT Server Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="prompt" aria-hidden="true"></span>
+      <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      <h1>TCMT <span>Server</span></h1>
+      <span class="tag" id="versionTag">v–</span>
+    </div>
+    <div class="conn" role="status">
+      <span class="dot" id="connDot"></span>
+      <span id="connText">connecting…</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- fleet overview: driven by WS aggregate (0.5s) -->
+    <section class="stats" aria-label="设备概览">
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>设备总数</div>
+        <div class="card-val"><b id="statTotal">--</b></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>在线</div>
+        <div class="card-val"><b id="statOnline" class="ok">--</b></div>
+        <div class="card-sub" id="statOnlineSub"></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>离线</div>
+        <div class="card-val"><b id="statOffline" class="muted-val">--</b></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>WS 连接</div>
+        <div class="card-val"><b id="statWs">--</b></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>CPU 均值</div>
+        <div class="card-val"><b id="statCpuAvg">--</b><small>%</small></div>
+        <div class="card-sub" id="statCpuPeak"></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/></svg>内存均值</div>
+        <div class="card-val"><b id="statMemAvg">--</b><small>%</small></div>
+        <div class="card-sub" id="statMemPeak"></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>GPU 均值</div>
+        <div class="card-val"><b id="statGpuAvg">--</b><small>%</small></div>
+        <div class="card-sub" id="statGpuPeak"></div>
+      </article>
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>最高温度</div>
+        <div class="card-val"><b id="statTempMax">--</b></div>
+        <div class="card-sub" id="statTempSub"></div>
+      </article>
+    </section>
+
+    <!-- fleet trend sparklines, fed by WS aggregate -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>实时趋势 <small>全设备均值 · 最近 1 分钟</small></h2>
+      </div>
+      <div class="sparks">
+        <div class="spark-cell"><span>CPU %</span><canvas id="sparkCpu"></canvas><b class="spark-val" id="sparkValCpu">--</b></div>
+        <div class="spark-cell"><span>内存 %</span><canvas id="sparkMem"></canvas><b class="spark-val" id="sparkValMem">--</b></div>
+        <div class="spark-cell"><span>GPU %</span><canvas id="sparkGpu"></canvas><b class="spark-val" id="sparkValGpu">--</b></div>
+        <div class="spark-cell"><span>温度 °C</span><canvas id="sparkTemp"></canvas><b class="spark-val" id="sparkValTemp">--</b></div>
+      </div>
+    </section>
+
+    <!-- device table -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>设备 <small id="deviceCount"></small></h2>
+      </div>
+      <div class="table-wrap">
+        <table class="devices">
+          <thead>
+            <tr>
+              <th scope="col">设备</th>
+              <th scope="col">系统</th>
+              <th scope="col">型号</th>
+              <th scope="col">IP</th>
+              <th scope="col">CPU</th>
+              <th scope="col">内存</th>
+              <th scope="col">GPU</th>
+              <th scope="col">温度</th>
+              <th scope="col">最后在线</th>
+            </tr>
+          </thead>
+          <tbody id="deviceRows">
+            <tr><td colspan="8" class="empty">等待设备接入…（启动 TCMT-M --http 后自动出现）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <!-- server self-monitoring -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Server <small id="srvVersion"></small></h2>
+      </div>
+      <div class="server-grid">
+        <div><span>数据库</span><b id="srvDbSize">--</b></div>
+        <div><span>累计快照</span><b id="srvIngests">--</b></div>
+        <div><span>快照速率</span><b id="srvRate">--</b></div>
+        <div><span>WS 连接</span><b id="srvWs">--</b></div>
+        <div><span>运行时长</span><b id="srvUptime">--</b></div>
+        <div><span>Node 内存</span><b id="srvMem">--</b></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- single-device detail (click a device row) -->
+  <div class="overlay" id="deviceOverlay" hidden>
+    <div class="detail" role="dialog" aria-modal="true" aria-labelledby="detailName">
+      <div class="detail-head">
+        <h2 id="detailName">--</h2>
+        <button type="button" class="close" id="detailClose" aria-label="返回仪表盘">← 返回</button>
+      </div>
+      <div class="detail-info" id="detailInfo"></div>
+      <div class="detail-grid">
+        <div class="detail-col">
+          <h3>温度</h3>
+          <ul id="detailTemps" class="temp-list"><li class="empty">暂无数据</li></ul>
+        </div>
+        <div class="detail-col">
+          <h3>运动传感器</h3>
+          <table class="kv" id="detailMotion"></table>
+        </div>
+      </div>
+      <div class="detail-history">
+        <div class="history-head">
+          <h3>历史曲线</h3>
+          <div class="ranges" id="detailRanges">
+            <button type="button" data-range="1h" class="active">1h</button>
+            <button type="button" data-range="6h">6h</button>
+            <button type="button" data-range="24h">24h</button>
+          </div>
+          <select id="detailField" title="字段"></select>
+          <span id="detailHint" class="hint"></span>
+        </div>
+        <canvas id="detailChart"></canvas>
+      </div>
+      <div class="detail-fields">
+        <h3>字段索引</h3>
+        <div class="table-wrap">
+          <table class="devices" id="detailFieldsTable">
+            <thead><tr><th scope="col">字段</th><th scope="col">当前</th><th scope="col">最小</th><th scope="col">最大</th><th scope="col">次数</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span title="数据库路径"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg><b id="statDb">--</b></span>
+    <span><b id="statRetention">--</b> 保留</span>
+    <span>运行 <b id="statUptime">--</b></span>
+    <span>快照速率 <b id="statRate">--</b></span>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
