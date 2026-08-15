@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './lib/store.js';
 import { createHandler } from './lib/api.js';
 import { createStatic } from './lib/static.js';
+import { createArchiver } from './lib/archive.js';
 import { isWsRequest, acceptUpgrade, send, createTicketStore } from './lib/ws.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +38,12 @@ const TLS_CERT = arg('--tls-cert', process.env.TCMT_SERVER_TLS_CERT || '');
 const TLS_KEY = arg('--tls-key', process.env.TCMT_SERVER_TLS_KEY || '');
 const SCHEME = TLS_CERT && TLS_KEY ? 'https' : 'http';
 
+// Long-term archiving into InfluxDB (optional — disabled unless the URL is set).
+const INFLUX_URL = arg('--influx-url', process.env.TCMT_INFLUX_URL || '');
+const INFLUX_TOKEN = arg('--influx-token', process.env.TCMT_INFLUX_TOKEN || '');
+const INFLUX_ORG = arg('--influx-org', process.env.TCMT_INFLUX_ORG || 'tcmt');
+const INFLUX_BUCKET = arg('--influx-bucket', process.env.TCMT_INFLUX_BUCKET || 'tcmt');
+
 if (Boolean(TLS_CERT) !== Boolean(TLS_KEY)) {
   console.error('[tcmt-server] --tls-cert and --tls-key must be provided together');
   process.exit(1);
@@ -56,6 +63,13 @@ const store = new Store({
 });
 const clients = new Set();
 const wsTickets = createTicketStore();
+const archiver = createArchiver({
+  store,
+  influxUrl: INFLUX_URL,
+  token: INFLUX_TOKEN,
+  org: INFLUX_ORG,
+  bucket: INFLUX_BUCKET,
+});
 
 function broadcast(obj) {
   const text = JSON.stringify(obj);
@@ -129,6 +143,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[tcmt-server] CORS     : ${CORS_ORIGIN}`);
   if (PUBLIC_URL) console.log(`[tcmt-server] public   : ${PUBLIC_URL}`);
   if (AUTH_TOKEN) console.log('[tcmt-server] auth     : read APIs + /ws require Bearer <token> (--auth-token)');
+  if (INFLUX_URL) console.log(`[tcmt-server] archive  : InfluxDB ${INFLUX_URL} (org ${INFLUX_ORG}, bucket ${INFLUX_BUCKET})`);
   if (HOST === '0.0.0.0' || HOST === '::') {
     for (const iface of lanAddresses()) {
       console.log(`[tcmt-server] LAN API   : ${SCHEME}://${iface.address}:${PORT}/`);
@@ -140,6 +155,7 @@ server.listen(PORT, HOST, () => {
   }
   console.log(`[tcmt-server] dashboard : ${SCHEME}://localhost:${PORT}/dashboard/`);
   console.log('[tcmt-server] viewer is a separate app: open TCMT-M-viewer/index.html or serve it statically.');
+  archiver.start();
 });
 
 function lanAddresses() {
@@ -155,6 +171,7 @@ function lanAddresses() {
 }
 
 function shutdown() {
+  archiver.stop();
   try { store.close(); } catch { /* already closed */ }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1000).unref();

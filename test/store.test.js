@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import http from 'node:http';
 import { Store, flatten } from '../lib/store.js';
+import { createArchiver } from '../lib/archive.js';
 
 function tempDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcmt-store-'));
@@ -187,6 +189,61 @@ test('outdated timeseries schema is preserved and rebuilt', () => {
   const oldRow = store.db.prepare(`SELECT value FROM ${backups[0].name}`).get();
   assert.equal(oldRow.value, 42.5);
   store.close();
+});
+
+test('archiver moves old timeseries rows into InfluxDB (line protocol)', async () => {
+  const db = tempDb();
+  const store = new Store({ dbPath: db, retentionDays: 1 });
+  const dev = store.register('ck-arch', 'ArchBox', 'macOS', 'M2');
+  const now = Date.now();
+  // Two rows older than retention, one fresh.
+  store.ingest(dev.token, snapshot({ cpu_usage: 10 }), now - 2 * 86400000);
+  store.ingest(dev.token, snapshot({ cpu_usage: 20 }), now - 2 * 86400000);
+  store.ingest(dev.token, snapshot({ cpu_usage: 30 }), now);
+
+  // Fake Influx server capturing the write body.
+  const writes = [];
+  const fake = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      writes.push({ url: req.url, auth: req.headers.authorization, body });
+      res.writeHead(204);
+      res.end();
+    });
+  });
+  await new Promise(resolve => fake.listen(0, '127.0.0.1', resolve));
+  const port = fake.address().port;
+
+  try {
+    const archiver = createArchiver({
+      store,
+      influxUrl: `http://127.0.0.1:${port}`,
+      token: 'test-token',
+      org: 'tcmt',
+      bucket: 'tcmt',
+    });
+    const { archived } = await archiver.runOnce();
+    // 2 stale snapshots x 6 flattened fields each = 12 archived rows.
+    assert.equal(archived, 12);
+    assert.equal(writes.length, 1);
+    assert.ok(writes[0].url.includes('/api/v2/write'));
+    assert.ok(writes[0].url.includes('org=tcmt') && writes[0].url.includes('bucket=tcmt'));
+    assert.equal(writes[0].auth, 'Token test-token');
+    const lines = writes[0].body.trim().split('\n');
+    assert.equal(lines.length, 12);
+    assert.ok(lines[0].startsWith(`tcmt_metric,device_id=${dev.id},field=cpu_usage value=10 `));
+
+    // Fresh snapshot remains (6 fields); drained rows are gone.
+    const remaining = store.db.prepare('SELECT COUNT(*) AS n FROM timeseries').get().n;
+    assert.equal(remaining, 6);
+    const hist = store.history(dev.id, 'cpu_usage', 0, now, 0);
+    assert.equal(hist.length, 1);
+    assert.equal(hist[0].value, 30);
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+    store.close();
+  }
 });
 
 test('aggregate summarizes fleet counts and avg/max over online devices', () => {

@@ -34,6 +34,27 @@ server 地址在客户端 TUI 设置里配置（`http://<server-ip>:8080`）。
 
 需要 Node.js >= 22.5（使用内置 `node:sqlite`，零 npm 依赖）。
 
+### 长历史归档（可选，InfluxDB）
+
+SQLite 只保留最近 `--retention-days` 天的热数据；更早的行可以自动搬进 InfluxDB
+（单向归档，零 npm 依赖，直接走 line protocol）：
+
+```bash
+docker run -d --name tcmt-influx -p 8086:8086 influxdb:2
+# 初始化一次（网页 http://localhost:8086 或 CLI）：建 org "tcmt"、bucket "tcmt"、拿 token
+
+node server.js \
+  --influx-url http://127.0.0.1:8086 \
+  --influx-token <token> \
+  --influx-org tcmt \
+  --influx-bucket tcmt
+```
+
+启动时立即归档一轮，之后每小时一次；每次分批发（每批 5000 行、每轮最多 20 批），
+不影响在线 ingest。数据写入 measurement `tcmt_metric`，tag 为 `device_id` + `field`，
+字段 `value`，时间戳毫秒精度。不配置 `--influx-url` 则归档完全禁用（旧数据照旧由
+保留期直接清理）。
+
 ## API
 
 | 方法 | 路径 | 说明 |
@@ -91,6 +112,7 @@ TCMT-M-server/
 ├── lib/store.js       # SQLite 设备注册 + 快照 + 时序 + 字段索引 + 摘要
 ├── lib/api.js         # REST 路由（纯 API）
 ├── lib/static.js      # dashboard 静态文件服务（路径穿越防护）
+├── lib/archive.js     # InfluxDB 长历史归档（line protocol，零依赖）
 ├── lib/ws.js          # RFC-6455 握手/帧/心跳（零依赖）
 ├── dashboard/         # 内置 server 看板（index.html + styles.css + app.js）
 └── test/              # node --test 单测 + 集成测试
