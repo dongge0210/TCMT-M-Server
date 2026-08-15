@@ -334,6 +334,66 @@ select {
 .hint { font-size: 11px; color: var(--muted); }
 #detailChart { width: 100%; height: 200px; display: block; }
 
+/* ── alerts ─────────────────────────────────────────── */
+.alerts-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.alerts-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+  background: rgba(239, 68, 68, .08);
+  border: 1px solid rgba(239, 68, 68, .35);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.alerts-list b { font-family: var(--font-mono); color: #f87171; }
+.alerts-list .empty { border-style: dashed; background: none; color: var(--muted); }
+
+.rules-editor summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+.rules-editor { margin-top: 6px; }
+.rule-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.rule-row input, .rule-row select { min-width: 0; }
+.rule-row input[type="text"] { flex: 1; max-width: 180px; }
+.rule-row input[type="number"] { width: 90px; }
+.rule-row button { min-width: 32px; }
+
+.btn {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  min-height: 34px;
+  transition: border-color .15s ease, color .15s ease;
+}
+.btn:hover:not(:disabled) { border-color: #475569; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.primary { color: var(--accent); border-color: var(--accent); }
+.btn.danger { color: var(--danger); border-color: rgba(239, 68, 68, .5); }
+
+#groupFilter { max-width: 160px; }
+.panel-head .btn { margin-left: auto; }
+.panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+table.devices .col-sel { width: 34px; text-align: center; }
+table.devices tr.alerted td { background: rgba(239, 68, 68, .07); }
+table.devices tr.alerted td:first-child { border-left: 3px solid var(--danger); }
+
+.detail-manage { margin-top: 14px; }
+.manage-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.manage-row label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.manage-row input { width: 180px; }
+#compareChart { width: 100%; height: 320px; display: block; }
+
 /* ── footer ─────────────────────────────────────────── */
 footer {
   display: flex;

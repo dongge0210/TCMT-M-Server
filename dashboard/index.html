@@ -60,6 +60,26 @@
         <div class="card-val"><b id="statTempMax">--</b></div>
         <div class="card-sub" id="statTempSub"></div>
       </article>
+      <article class="card">
+        <div class="card-head"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>告警</div>
+        <div class="card-val"><b id="statAlerts">0</b></div>
+        <div class="card-sub" id="statAlertsSub"></div>
+      </article>
+    </section>
+
+    <!-- active alerts -->
+    <section class="panel" id="alertsPanel" hidden>
+      <div class="panel-head">
+        <h2>告警 <small>阈值规则</small></h2>
+      </div>
+      <ul id="alertsList" class="alerts-list"></ul>
+      <details class="rules-editor">
+        <summary>编辑阈值规则</summary>
+        <div id="rulesRows"></div>
+        <button type="button" id="ruleAdd" class="btn">＋ 添加规则</button>
+        <button type="button" id="ruleSave" class="btn primary">保存规则</button>
+        <span id="ruleHint" class="hint"></span>
+      </details>
     </section>
 
     <!-- fleet trend sparklines, fed by WS aggregate -->
@@ -79,11 +99,14 @@
     <section class="panel">
       <div class="panel-head">
         <h2>设备 <small id="deviceCount"></small></h2>
+        <select id="groupFilter" title="分组筛选"><option value="">全部分组</option></select>
+        <button type="button" id="compareBtn" class="btn" disabled>对比所选 (0)</button>
       </div>
       <div class="table-wrap">
         <table class="devices">
           <thead>
             <tr>
+              <th scope="col" class="col-sel"></th>
               <th scope="col">设备</th>
               <th scope="col">系统</th>
               <th scope="col">型号</th>
@@ -157,6 +180,37 @@
           </table>
         </div>
       </div>
+      <div class="detail-manage">
+        <h3>设备管理</h3>
+        <div class="manage-row">
+          <label>显示名 <input id="mgrName" type="text" placeholder="留空 = 原名" /></label>
+          <label>分组 <input id="mgrGroup" type="text" placeholder="例如：机房A" /></label>
+          <label>备注 <input id="mgrNote" type="text" /></label>
+          <button type="button" id="mgrSave" class="btn primary">保存</button>
+          <button type="button" id="mgrExport" class="btn">导出 CSV</button>
+          <span id="mgrHint" class="hint"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- multi-device comparison page (#/compare) -->
+  <div class="overlay" id="compareOverlay" hidden>
+    <div class="detail">
+      <div class="detail-head">
+        <h2>设备对比</h2>
+        <button type="button" class="close" id="compareClose" aria-label="返回仪表盘">← 返回</button>
+      </div>
+      <div class="history-head">
+        <select id="compareField" title="字段"></select>
+        <div class="ranges" id="compareRanges">
+          <button type="button" data-range="1h" class="active">1h</button>
+          <button type="button" data-range="6h">6h</button>
+          <button type="button" data-range="24h">24h</button>
+        </div>
+        <span id="compareHint" class="hint"></span>
+      </div>
+      <canvas id="compareChart"></canvas>
     </div>
   </div>
 

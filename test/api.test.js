@@ -27,9 +27,9 @@ async function closeServer(s) {
   s.store.close();
 }
 
-async function post(base, p, body, headers = {}) {
+async function post(base, p, body, headers = {}, method = 'POST') {
   const res = await fetch(base + p, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
@@ -272,6 +272,101 @@ test('ws tickets are single-use and expire', async () => {
   const t2 = store.issue().ticket;
   await new Promise(resolve => setTimeout(resolve, 40));
   assert.equal(store.consume(t2), false); // expired
+});
+
+test('device management: rename / group / note', async () => {
+  const s = await startServer();
+  try {
+    const reg = await post(s.base, '/api/register', { clientKey: 'ck-mgmt', name: 'BoxA' });
+    const id = reg.json.id;
+
+    const patched = await post(s.base, `/api/devices/${id}`, {
+      displayName: '生产机-1', group: '机房A', note: '主要采集节点',
+    }, {}, 'PATCH');
+    assert.equal(patched.status, 200);
+    assert.equal(patched.json.displayName, '生产机-1');
+    assert.equal(patched.json.group, '机房A');
+
+    const devices = await get(s.base, '/api/devices');
+    const d = devices.json.find(x => x.id === id);
+    assert.equal(d.displayName, '生产机-1');
+    assert.equal(d.group, '机房A');
+    assert.equal(d.note, '主要采集节点');
+
+    const missing = await post(s.base, '/api/devices/nope', { displayName: 'x' }, {}, 'PATCH');
+    assert.equal(missing.status, 404);
+  } finally {
+    await closeServer(s);
+  }
+});
+
+test('alert rules configure + violations surface', async () => {
+  const s = await startServer();
+  try {
+    // Custom low threshold so the fixture snapshot triggers it.
+    const put = await post(s.base, '/api/alerts', {
+      rules: [{ field: 'cpu_usage', op: '>', value: 10 }],
+    }, {}, 'PUT');
+    assert.equal(put.status, 200);
+    assert.equal(put.json.rules.length, 1);
+
+    const rules = await get(s.base, '/api/alerts');
+    assert.equal(rules.json.rules[0].value, 10);
+
+    const reg = await post(s.base, '/api/register', { clientKey: 'ck-alert', name: 'HotBox' });
+    await post(s.base, '/api/ingest', snapshot(reg.json.token)); // cpu_usage 42.5 > 10
+
+    const state = await get(s.base, '/api/alerts/state');
+    assert.ok(state.json.active.some(a =>
+      a.deviceId === reg.json.id && a.field === 'cpu_usage' && a.current === 42.5));
+  } finally {
+    await closeServer(s);
+  }
+});
+
+test('compare aligns multiple devices on one field', async () => {
+  const s = await startServer();
+  try {
+    const a = await post(s.base, '/api/register', { clientKey: 'ck-cmp-a', name: 'A' });
+    const b = await post(s.base, '/api/register', { clientKey: 'ck-cmp-b', name: 'B' });
+    await post(s.base, '/api/ingest', snapshot(a.json.token));
+    await post(s.base, '/api/ingest', { ...snapshot(b.json.token), cpu_usage: 90 });
+
+    const cmp = await get(s.base,
+      `/api/compare?field=cpu_usage&devices=${a.json.id},${b.json.id}&from=-1h&bucket=60`);
+    assert.equal(cmp.status, 200);
+    assert.equal(cmp.json.series.length, 2);
+    assert.equal(cmp.json.series[0].name, 'A');
+    assert.equal(cmp.json.series[1].name, 'B');
+
+    const bad = await get(s.base, '/api/compare');
+    assert.equal(bad.status, 400);
+  } finally {
+    await closeServer(s);
+  }
+});
+
+test('export downloads CSV history', async () => {
+  const s = await startServer();
+  try {
+    const reg = await post(s.base, '/api/register', { clientKey: 'ck-export', name: 'ExpBox' });
+    await post(s.base, '/api/ingest', snapshot(reg.json.token));
+
+    const res = await fetch(
+      `${s.base}/api/devices/${reg.json.id}/export?field=cpu_usage&from=-1h`
+    );
+    assert.equal(res.status, 200);
+    assert.ok((res.headers.get('content-type') || '').includes('text/csv'));
+    assert.ok((res.headers.get('content-disposition') || '').includes('attachment'));
+    const body = await res.text();
+    assert.ok(body.startsWith('timestamp_iso,value'));
+    assert.ok(body.includes('42.5'));
+
+    const noField = await fetch(`${s.base}/api/devices/${reg.json.id}/export`);
+    assert.equal(noField.status, 400);
+  } finally {
+    await closeServer(s);
+  }
 });
 
 test('aggregate endpoint summarizes the fleet', async () => {

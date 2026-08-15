@@ -23,6 +23,11 @@ const state = {
   detailField: 'cpu_usage',
   detailRange: '1h',
   detailFields: [],
+  alerts: { rules: [], active: [] },
+  selected: new Set(),    // devices picked for comparison
+  compareField: 'cpu_usage',
+  compareRange: '1h',
+  compareDevices: [],
 };
 
 const SPARK_CAP = 120; // 0.5s cadence -> ~1 minute
@@ -202,14 +207,15 @@ function drawSparks() {
 // Rows are only rebuilt when the device set changes; value updates happen
 // in place so text selection and hover states never flicker.
 const EMPTY_ROWS =
-  '<tr><td colspan="9" class="empty">等待设备接入…（启动 TCMT-M --http 后自动出现）</td></tr>';
+  '<tr><td colspan="10" class="empty">等待设备接入…（启动 TCMT-M --http 后自动出现）</td></tr>';
 
 function deviceRowMarkup(d) {
   return (
     // esc(d.id) keeps the attribute safe (ids can come from legacy migration);
     // CSS.escape(raw id) still matches because HTML parsing restores the raw value.
     `<tr data-device="${esc(d.id)}" tabindex="0">` +
-    `<td><span class="dname"><span class="dot"></span><span class="cell-name">${esc(d.name)}</span></span>` +
+    `<td class="col-sel"><input type="checkbox" class="sel" data-id="${esc(d.id)}" aria-label="选择对比"></td>` +
+    `<td><span class="dname"><span class="dot"></span><span class="cell-name">${esc(d.displayName || d.name)}</span></span>` +
     `<span class="cell-state" style="font-size:11px;color:var(--muted)"></span>` +
     `<span class="cell-sub"></span></td>` +
     `<td class="cell-os">${esc(d.os || '--')}</td>` +
@@ -224,16 +230,28 @@ function deviceRowMarkup(d) {
   );
 }
 
+function renderGroupFilter() {
+  const groups = [...new Set(state.devices.map(d => d.group).filter(Boolean))].sort();
+  const sel = $('groupFilter');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">全部分组</option>' +
+    groups.map(g => `<option>${esc(g)}</option>`).join('');
+  if (groups.includes(prev)) sel.value = prev;
+}
+
 function renderDevices() {
   const tbody = $('deviceRows');
   $('deviceCount').textContent = state.devices.length ? `${state.devices.length} 台` : '';
-  const ids = state.devices.map(d => d.id).join(',');
+  const group = $('groupFilter').value;
+  const visible = group ? state.devices.filter(d => d.group === group) : state.devices;
+  const ids = visible.map(d => d.id).join(',');
   if (ids !== state.deviceIds) {
     state.deviceIds = ids;
-    tbody.innerHTML = state.devices.length ? state.devices.map(deviceRowMarkup).join('') : EMPTY_ROWS;
+    tbody.innerHTML = visible.length ? visible.map(deviceRowMarkup).join('') : EMPTY_ROWS;
+    renderGroupFilter();
   }
-  if (!state.devices.length) return;
-  for (const d of state.devices) {
+  if (!visible.length) return;
+  for (const d of visible) {
     const row = tbody.querySelector(`tr[data-device="${CSS.escape(d.id)}"]`);
     if (!row) {
       state.deviceIds = ''; // structure is stale — rebuild once
@@ -252,18 +270,44 @@ function renderDevices() {
     row.querySelector('.cell-gpu').textContent = gpu === null ? '--' : gpu.toFixed(0) + '%';
     row.querySelector('.cell-temp').textContent = temp === null ? '--' : temp.toFixed(1) + '°C';
     row.querySelector('.cell-seen').textContent = timeAgo(d.lastSeen);
-    // System info from the snapshot (client sends cpu/gpu/os_version/uptime).
     const osTxt = (d.os || '--') + (data && data.os_version ? ' ' + data.os_version : '');
     row.querySelector('.cell-os').textContent = osTxt;
     const sub = [];
+    if (d.group) sub.push(d.group);
     if (data && data.cpu_name) sub.push(data.cpu_name);
     if (data && data.memory_total) sub.push(fmtBytes(data.memory_total));
+    if (d.displayName && d.displayName !== d.name) sub.push('原名 ' + d.name);
     row.querySelector('.cell-sub').textContent = sub.join(' · ');
     const dot = row.querySelector('.dname .dot');
     dot.className = 'dot' + (d.online ? ' on' : '');
     row.querySelector('.cell-state').textContent = d.online ? '' : '· 离线';
+    row.querySelector('.sel').checked = state.selected.has(d.id);
+    row.classList.toggle('alerted', state.alerts.active.some(a => a.deviceId === d.id));
   }
 }
+
+$('groupFilter').addEventListener('change', () => {
+  state.deviceIds = '';
+  renderDevices();
+});
+
+/* ── device selection + compare ─────────────────────── */
+function updateCompareBtn() {
+  const n = state.selected.size;
+  $('compareBtn').disabled = n < 2;
+  $('compareBtn').textContent = `对比所选 (${n})`;
+}
+$('deviceRows').addEventListener('change', e => {
+  const cb = e.target.closest('.sel');
+  if (!cb) return;
+  if (cb.checked) state.selected.add(cb.dataset.id);
+  else state.selected.delete(cb.dataset.id);
+  updateCompareBtn();
+});
+$('compareBtn').addEventListener('click', () => {
+  if (state.selected.size < 2) return;
+  openCompare([...state.selected]);
+});
 
 async function backfillLatest(id, retries = 0) {
   if (state.backfilling.has(id)) return;
@@ -307,6 +351,62 @@ function pruneIngestRate() {
   $('srvRate').textContent = rate;
 }
 
+/* ── alerts + rules editor ──────────────────────────── */
+function renderAlerts() {
+  const { rules, active } = state.alerts;
+  $('statAlerts').textContent = active.length;
+  $('statAlerts').style.color = active.length ? '#ef4444' : '';
+  $('statAlertsSub').textContent = rules.length ? `${rules.length} 条规则` : '';
+  $('alertsPanel').hidden = active.length === 0 && rules.length === 0;
+  $('alertsList').innerHTML = active.length
+    ? active.map(a =>
+        `<li><span>${esc(a.deviceName)}</span>` +
+        `<b>${esc(a.field)} ${esc(a.op)} ${a.value}</b>` +
+        `<span>当前 <b>${a.current}</b></span></li>`
+      ).join('')
+    : '<li class="empty">当前无告警</li>';
+  $('rulesRows').innerHTML = rules.map((r, i) =>
+    `<div class="rule-row" data-i="${i}">` +
+    `<input type="text" data-k="field" value="${esc(r.field)}" aria-label="字段" />` +
+    `<select data-k="op"><option${r.op === '>' ? ' selected' : ''}>&gt;</option>` +
+    `<option${r.op === '<' ? ' selected' : ''}>&lt;</option></select>` +
+    `<input type="number" data-k="value" value="${r.value}" aria-label="阈值" />` +
+    `<button type="button" class="btn danger" data-del="${i}" aria-label="删除规则">×</button>` +
+    `</div>`
+  ).join('');
+}
+
+function saveRules() {
+  const rows = [...document.querySelectorAll('#rulesRows .rule-row')];
+  const rules = rows.map(row => ({
+    field: row.querySelector('[data-k=field]').value.trim(),
+    op: row.querySelector('[data-k=op]').value === '<' ? '<' : '>',
+    value: Number(row.querySelector('[data-k=value]').value),
+  })).filter(r => r.field && Number.isFinite(r.value));
+  api('/api/alerts', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rules }),
+  }).then(res => {
+    state.alerts.rules = res.rules;
+    renderAlerts();
+    $('ruleHint').textContent = '已保存';
+  }).catch(() => { $('ruleHint').textContent = '保存失败'; });
+}
+
+$('ruleAdd').addEventListener('click', () => {
+  state.alerts.rules.push({ field: '', op: '>', value: 0 });
+  renderAlerts();
+});
+$('rulesRows').addEventListener('click', e => {
+  const del = e.target.closest('[data-del]');
+  if (del) {
+    state.alerts.rules.splice(Number(del.dataset.del), 1);
+    renderAlerts();
+  }
+});
+$('ruleSave').addEventListener('click', saveRules);
+
 /* ── device detail page (hash-routed: #/device/<id>) ── */
 function openDetail(id) {
   if (state.detailId === id) return;
@@ -315,6 +415,13 @@ function openDetail(id) {
   state.detailRange = '1h';
   $('deviceOverlay').hidden = false;
   renderDetail();
+  const d = state.devices.find(x => x.id === id);
+  if (d) {
+    $('mgrName').value = d.displayName || '';
+    $('mgrGroup').value = d.group || '';
+    $('mgrNote').value = d.note || '';
+  }
+  $('mgrHint').textContent = '';
   loadDetailFields();
   loadDetailHistory();
 }
@@ -329,7 +436,10 @@ function closeDetail() {
 window.addEventListener('hashchange', () => {
   const m = location.hash.match(/^#\/device\/([^/]+)$/);
   if (m) openDetail(decodeURIComponent(m[1]));
-  else closeDetail();
+  else {
+    closeDetail();
+    closeCompare();
+  }
 });
 
 function renderDetail() {
@@ -337,7 +447,8 @@ function renderDetail() {
   const d = state.devices.find(x => x.id === id);
   const data = state.latestNow[id] || {};
   if (!d) return;
-  $('detailName').innerHTML = `<span class="dot ${d.online ? 'on' : ''}"></span> ${esc(d.name)}`;
+  $('detailName').innerHTML =
+    `<span class="dot ${d.online ? 'on' : ''}"></span> ${esc(d.displayName || d.name)}`;
   const parts = [];
   parts.push(`系统 <b>${esc((d.os || '--') + (data.os_version ? ' ' + data.os_version : ''))}</b>`);
   parts.push(`型号 <b>${esc(d.model || '--')}</b>`);
@@ -631,6 +742,192 @@ $('deviceRows').addEventListener('keydown', e => {
   if (m) openDetail(decodeURIComponent(m[1]));
 }
 
+/* ── multi-device comparison ────────────────────────── */
+const CMP_COLORS = ['#22c55e', '#4dd0e1', '#7c8cff', '#ffb74d', '#f472b6', '#a3e635'];
+
+function openCompare(ids) {
+  state.compareDevices = ids;
+  $('compareOverlay').hidden = false;
+  loadCompareFields();
+  loadCompare();
+}
+
+function closeCompare() {
+  state.compareDevices = [];
+  $('compareOverlay').hidden = true;
+}
+
+async function loadCompareFields() {
+  if (!state.compareDevices.length) return;
+  try {
+    const res = await api('/api/devices/' + state.compareDevices[0] + '/fields');
+    const fields = (res.fields || []).map(f => f.field);
+    const sel = $('compareField');
+    sel.innerHTML = '';
+    for (const f of fields) {
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = f;
+      sel.appendChild(opt);
+    }
+    if (!fields.includes(state.compareField) && fields.length) state.compareField = fields[0];
+    sel.value = state.compareField;
+  } catch { /* first device may have no data yet */ }
+}
+
+async function loadCompare() {
+  if (!state.compareDevices.length || !state.compareField) return;
+  const bucket = niceBucket(DETAIL_RANGE_MS[state.compareRange]);
+  try {
+    const res = await api(
+      `/api/compare?field=${encodeURIComponent(state.compareField)}` +
+      `&devices=${state.compareDevices.map(encodeURIComponent).join(',')}` +
+      `&from=-${state.compareRange}&to=&bucket=${bucket}`
+    );
+    drawCompareChart(res.series || []);
+    $('compareHint').textContent = `${res.series.length} 台 · ${bucket}s 聚合 · ${state.compareRange}`;
+  } catch {
+    drawCompareChart([]);
+    $('compareHint').textContent = '加载失败';
+  }
+}
+
+function drawCompareChart(series) {
+  const canvas = $('compareChart');
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || 800;
+  const h = canvas.clientHeight || 320;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const padL = 56, padR = 12, padT = 10, padB = 22;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const unit = fieldUnit(state.compareField);
+
+  const withVals = series
+    .map(s => ({ ...s, values: s.points.map(p => (p.value !== undefined ? p.value : p.avg)) }))
+    .filter(s => s.values.length >= 2);
+  if (!withVals.length) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('暂无数据（等客户端推送）', padL + plotW / 2, h / 2);
+    ctx.textAlign = 'left';
+    return;
+  }
+  let min = Infinity, max = -Infinity;
+  for (const s of withVals) for (const v of s.values) { if (v < min) min = v; if (v > max) max = v; }
+  if (max === min) { min -= 1; max += 1; }
+  const range = max - min;
+  const n = withVals[0].values.length;
+  const x = i => padL + (i / (n - 1)) * plotW;
+  const y = v => padT + (1 - (v - min) / range) * plotH;
+
+  ctx.strokeStyle = '#232a38';
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 3; i += 1) {
+    const v = min + (range * i) / 3;
+    const gy = y(v);
+    ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(w - padR, gy); ctx.stroke();
+    ctx.fillText(fmtAxis(v), padL - 6, gy + 4);
+  }
+  ctx.textAlign = 'center';
+  const p0 = withVals[0].points;
+  const t0 = p0[0].ts, t1 = p0[p0.length - 1].ts;
+  for (let i = 0; i <= 3; i += 1) {
+    const gx = padL + (plotW * i) / 3;
+    ctx.beginPath(); ctx.moveTo(gx, padT); ctx.lineTo(gx, h - padB); ctx.stroke();
+    ctx.fillText(hhmm(t0 + ((t1 - t0) * i) / 3), gx, h - 6);
+  }
+  ctx.textAlign = 'left';
+
+  withVals.forEach((s, si) => {
+    const color = CMP_COLORS[si % CMP_COLORS.length];
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    s.values.forEach((v, i) => {
+      if (i === 0) ctx.moveTo(x(i), y(v));
+      else ctx.lineTo(x(i), y(v));
+    });
+    ctx.stroke();
+  });
+
+  // Legend: swatch + device name + latest value, top-right.
+  ctx.font = '11px monospace';
+  let lx = w - padR;
+  withVals.slice().reverse().forEach((s) => {
+    const idx = withVals.indexOf(s);
+    const color = CMP_COLORS[idx % CMP_COLORS.length];
+    const label = `${s.name} ${fmtAxis(s.values[s.values.length - 1])}${unit}`;
+    const tw = ctx.measureText(label).width + 18;
+    lx -= tw;
+    ctx.fillStyle = color;
+    ctx.fillRect(lx, 4, 9, 9);
+    ctx.fillStyle = '#dfe4ee';
+    ctx.fillText(label, lx + 13, 12);
+    lx -= 4;
+  });
+}
+
+$('compareClose').addEventListener('click', () => { location.hash = ''; });
+$('compareField').addEventListener('change', () => {
+  state.compareField = $('compareField').value;
+  loadCompare();
+});
+document.querySelectorAll('#compareRanges button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.compareRange = btn.dataset.range;
+    document.querySelectorAll('#compareRanges button').forEach(b =>
+      b.classList.toggle('active', b === btn)
+    );
+    loadCompare();
+  });
+});
+
+/* ── device management + export ─────────────────────── */
+$('mgrSave').addEventListener('click', async () => {
+  try {
+    await api('/api/devices/' + state.detailId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        displayName: $('mgrName').value,
+        group: $('mgrGroup').value,
+        note: $('mgrNote').value,
+      }),
+    });
+    state.devices = await api('/api/devices');
+    renderDevices();
+    renderDetail();
+    $('mgrHint').textContent = '已保存';
+  } catch { $('mgrHint').textContent = '保存失败'; }
+});
+
+$('mgrExport').addEventListener('click', async () => {
+  const field = state.detailField || 'cpu_usage';
+  const headers = {};
+  if (accessToken) headers['Authorization'] = 'Bearer ' + accessToken;
+  try {
+    const res = await fetch(
+      API + `/api/devices/${state.detailId}/export?field=${encodeURIComponent(field)}&from=-24h`,
+      { headers }
+    );
+    if (!res.ok) { $('mgrHint').textContent = '导出失败'; return; }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${state.detailField}_24h.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch { $('mgrHint').textContent = '导出失败'; }
+});
+
 /* ── WebSocket ──────────────────────────────────────── */
 async function connectWs() {
   // Browser WebSocket cannot send the Authorization header, so exchange the
@@ -677,6 +974,10 @@ async function connectWs() {
       state.aggregate = msg.data;
       renderFleet();
       pushSparks();
+    } else if (msg.type === 'alerts') {
+      state.alerts = msg.data || { rules: [], active: [] };
+      renderAlerts();
+      renderDevices();
     } else if (msg.type === 'snapshot') {
       state.latestNow[msg.deviceId] = msg.data;
       state.ingestTimes.push(Date.now());
@@ -694,6 +995,10 @@ function scheduleReconnect() {
 /* ── boot ───────────────────────────────────────────── */
 loadStats();
 connectWs();
+api('/api/alerts').then(res => {
+  state.alerts.rules = res.rules || [];
+  renderAlerts();
+}).catch(() => { /* alerts optional */ });
 setInterval(loadStats, 5000);
 setInterval(pruneIngestRate, 1000);
 setInterval(renderDevices, 1000); // refresh "最后在线" column

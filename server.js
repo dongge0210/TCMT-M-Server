@@ -116,10 +116,11 @@ server.on('upgrade', (req, socket) => {
   );
 });
 
-// Periodic device-list + fleet-aggregate broadcast (previous server cadence).
+// Periodic device-list + fleet-aggregate + alert broadcast (0.5s cadence).
 setInterval(() => {
   broadcast({ type: 'devices', data: store.list() });
   broadcast({ type: 'aggregate', data: store.aggregate() });
+  broadcast({ type: 'alerts', data: store.alerts() });
 }, 500);
 
 server.listen(PORT, HOST, () => {
