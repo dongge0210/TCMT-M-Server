@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './lib/store.js';
 import { createHandler } from './lib/api.js';
 import { createStatic } from './lib/static.js';
-import { createArchiver } from './lib/archive.js';
+import { createArchiver, queryInflux } from './lib/archive.js';
 import { isWsRequest, acceptUpgrade, send, createTicketStore } from './lib/ws.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -85,6 +85,13 @@ const apiHandler = createHandler({
     startTime: Date.now(),
     wsClients: () => clients.size,
     issueWsTicket: () => wsTickets.issue(),
+    // Long-history queries against the archive bucket (null when disabled).
+    queryArchive: INFLUX_URL
+      ? q => queryInflux({
+          influxUrl: INFLUX_URL, token: INFLUX_TOKEN,
+          org: INFLUX_ORG, bucket: INFLUX_BUCKET, ...q,
+        })
+      : null,
   },
   onSnapshot(device) {
     broadcast({ type: 'snapshot', deviceId: device.id, data: device.latest });

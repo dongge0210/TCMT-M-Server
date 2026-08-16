@@ -6,7 +6,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import http from 'node:http';
 import { Store, flatten } from '../lib/store.js';
-import { createArchiver } from '../lib/archive.js';
+import { createArchiver, queryInflux } from '../lib/archive.js';
 
 function tempDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcmt-store-'));
@@ -243,6 +243,40 @@ test('archiver moves old timeseries rows into InfluxDB (line protocol)', async (
   } finally {
     await new Promise(resolve => fake.close(resolve));
     store.close();
+  }
+});
+
+test('queryInflux parses annotated CSV into points', async () => {
+  const fake = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/csv' });
+      res.end([
+        '#datatype,string,long,dateTime:RFC3339,dateTime:RFC3339,dateTime:RFC3339,double,string,string,string',
+        '#group,false,false,true,true,false,false,true,true,true',
+        '#default,_result,,,,,,,,',
+        ',result,table,_start,_stop,_time,_value,_field,_measurement,device_id',
+        ',,0,2026-08-01T00:00:00Z,2026-08-02T00:00:00Z,2026-08-01T01:00:00Z,42.5,cpu_usage,tcmt_metric,dev_x',
+        ',,0,2026-08-01T00:00:00Z,2026-08-02T00:00:00Z,2026-08-01T02:00:00Z,43.5,cpu_usage,tcmt_metric,dev_x',
+        '',
+      ].join('\n'));
+    });
+  });
+  await new Promise(resolve => fake.listen(0, '127.0.0.1', resolve));
+  const port = fake.address().port;
+  try {
+    const points = await queryInflux({
+      influxUrl: `http://127.0.0.1:${port}`,
+      token: 't', org: 'tcmt', bucket: 'tcmt',
+      deviceId: 'dev_x', field: 'cpu_usage',
+      from: Date.now() - 86400000, to: Date.now(), bucketSec: 3600,
+    });
+    assert.equal(points.length, 2);
+    assert.equal(points[0].value, 42.5);
+    assert.ok(points[1].ts > points[0].ts);
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
   }
 });
 

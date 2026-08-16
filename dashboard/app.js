@@ -74,6 +74,12 @@ function fmtBytes(v) {
   return x.toFixed(1) + ' ' + units[i];
 }
 
+function fmtSpeed(bps) {
+  if (bps === undefined || bps === null || !Number.isFinite(Number(bps))) return '--';
+  const v = Number(bps) / (1024 * 1024);
+  return v.toFixed(1) + ' MB/s';
+}
+
 // Escape strings interpolated into innerHTML (device names/os/model are
 // client-supplied and must never be treated as markup).
 function esc(s) {
@@ -484,6 +490,34 @@ function renderDetail() {
   $('detailMotion').innerHTML = m.length
     ? m.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')
     : '<tr><td colspan="2" style="color:var(--muted)">暂无数据</td></tr>';
+
+  // Disks (volumes): name + used/total with percent.
+  const disks = Array.isArray(data.disks) ? data.disks : [];
+  $('detailDisks').innerHTML = disks.length
+    ? disks.map(d => {
+        const used = d.used !== undefined && d.total
+          ? `${fmtBytes(d.used)} / ${fmtBytes(d.total)}` : '--';
+        const pct = d.used !== undefined && d.total
+          ? ` (${((d.used / d.total) * 100).toFixed(0)}%)` : '';
+        return `<tr><td>${esc(d.name || '?')}</td><td>${used}${pct}</td></tr>`;
+      }).join('')
+    : '<tr><td colspan="2" style="color:var(--muted)">暂无数据</td></tr>';
+
+  // Network adapters: name + down/up speeds.
+  const nets = Array.isArray(data.net) ? data.net : [];
+  $('detailNet').innerHTML = nets.length
+    ? nets.map(n =>
+        `<tr><td>${esc(n.name || '?')}</td><td>↓ ${fmtSpeed(n.down)} · ↑ ${fmtSpeed(n.up)}</td></tr>`
+      ).join('')
+    : '<tr><td colspan="2" style="color:var(--muted)">暂无数据</td></tr>';
+
+  // Battery (optional).
+  const b = data.battery;
+  $('detailBattery').innerHTML = b
+    ? `<tr><td>电量</td><td>${b.percent}%${b.charging ? ' · 充电中' : ''}</td></tr>` +
+      (b.health !== undefined
+        ? `<tr><td>健康度</td><td>${fmt(b.health, 1)}%</td></tr>` : '')
+    : '<tr><td colspan="2" style="color:var(--muted)">无电池</td></tr>';
 }
 
 async function loadDetailFields() {
@@ -534,6 +568,21 @@ const DETAIL_RANGE_MS = { '1h': 3600000, '6h': 21600000, '24h': 86400000 };
 
 async function loadDetailHistory() {
   if (!state.detailId || !state.detailField) return;
+  // "长期" routes to the InfluxDB archive (requires --influx-url on the server).
+  if (state.detailRange === 'archive') {
+    try {
+      const res = await api(
+        `/api/devices/${state.detailId}/archive?field=${encodeURIComponent(state.detailField)}` +
+        '&from=-90d&to=&bucket=3600'
+      );
+      drawDetailChart(res.history || []);
+      $('detailHint').textContent = `Influx 归档 · ${res.count} 点 · 1h 聚合 · 最近 90 天`;
+    } catch {
+      drawDetailChart([]);
+      $('detailHint').textContent = '归档未配置（server 需 --influx-url）';
+    }
+    return;
+  }
   const bucket = niceBucket(DETAIL_RANGE_MS[state.detailRange]);
   try {
     const res = await api(
